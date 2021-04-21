@@ -1,0 +1,17 @@
+# this is base configuration file
+
+epoch: 200
+
+schedular: null
+
+optimizer: SGD
+optim_param:
+  lr: 0.3
+  weight_decay: 1e-3
+  momentum: 0.9
+
+debug: False
+
+module: base
+
+data_dir: /datasets
