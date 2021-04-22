@@ -12,5 +12,8 @@ def get_module(name):
         from pl_module.sup_simclr import SupSimModule
         return SupSimModule
 
+    elif name == 'ce_supsim':
+        from pl_module.ce_sup_sim import CESupSim
+        return CESupSim
     else:
         raise Exception("No valid module name")

@@ -7,8 +7,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from data.cifar10 import SplitSimCIFAR10, simclr_transform
+from data.cifar10 import SplitSimCIFAR10, simclr_transform, CIFAR10, general_transform
 from model.custom_resnet import model_dict
+from model.resnet_big import SupConResNet
 from losses.contrastive import SupConLoss
 
 
@@ -24,13 +25,14 @@ class SupSimModule(pl.LightningModule):
                  **kwargs):
         super(SupSimModule, self).__init__()
 
-        m, self.emb_dim = model_dict[model]
-        self.model = m(with_fc=False)
-        self.head = nn.Sequential(
-            nn.Linear(self.emb_dim, self.emb_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.emb_dim, feat_dim)
-        )
+        # m, self.emb_dim = model_dict[model]
+        # self.model = m(with_fc=False)
+        self.model = SupConResNet()
+        # self.head = nn.Sequential(
+        #     nn.Linear(self.emb_dim, self.emb_dim),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(self.emb_dim, feat_dim)
+        # )
         self.feat_dim = feat_dim
 
         self.criterion = SupConLoss(temperature=temperature)
@@ -83,15 +85,24 @@ class SupSimModule(pl.LightningModule):
         self.len_train_loader = len(loader)
         return loader
 
+    def test_dataloader(self):
+        data = CIFAR10(root=self.data_root,
+                       train=False,
+                       transform=general_transform['train'])
+
+        loader = DataLoader(data, shuffle=False,
+                            batch_size=self.batch_size,
+                            num_workers=self.num_workers)
+        self.len_test_loader = len(loader)
+        return loader
+
     def configure_optimizers(self):
         return torch.optim.SGD(self.parameters(), lr=self.lr,
                                weight_decay=self.weight_decay,
                                momentum=self.momentum)
 
-# todo learning rate warm up has to be added
     def training_step(self, batch, batch_idx):
         x1, y = batch
-
         bt_size = y.size(0)
 
         self.warmup_learning_rate(self.current_epoch, batch_idx,
@@ -106,12 +117,28 @@ class SupSimModule(pl.LightningModule):
 
         return loss
 
-    def on_epoch_start(self):
+    def test_step(self, batch, batch_idx):
+        '''
+        in testing section, it only takes single input (1_views)
+        :param batch:
+        :param batch_idx:
+        :return:
+        '''
+        x, y = batch
+
+        feat = self.forward(x)
+
+        loss = self.criterion(feat.unsqueeze(1), y)
+        self.log("test_loss", loss)
+        return {"test_loss": loss, }
+
+    def on_train_epoch_start(self):
         self.adjust_learning_rate()
 
     def forward(self, x):
-        out, _ = self.model(x)
-        out = F.normalize(self.head(out), dim=1)
+        # out, _ = self.model(x)
+        # out = F.normalize(self.head(out), dim=1)
+        out = self.model(x)
         return out
 
     def adjust_learning_rate(self):
