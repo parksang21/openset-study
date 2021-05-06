@@ -38,8 +38,7 @@ if __name__ == '__main__':
         trainer.fit(module)
 
     if temp_args.test:
-        assert temp_args.path is not None
-        if temp_args.path is not None:
+        if temp_args.path is not None and not temp_args.train:
             state_dict = torch.load(temp_args.path)
             module.load_from_checkpoint(temp_args.path)
 

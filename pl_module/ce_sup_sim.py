@@ -1,6 +1,8 @@
 from typing import Any
 import pytorch_lightning as pl
 import math
+import numpy as np
+import pickle as pkl
 
 import torch
 import torch.nn as nn
@@ -8,10 +10,10 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from data.cifar10 import general_transform
-from data.cifar10 import SplitCifar10
+from data.cifar10 import SplitCifar10, CIFAR10
 from model.custom_resnet import model_dict
 from losses.contrastive import SupConLoss
-
+from model.resnet_big import SupConResNet
 
 class CESupSim(pl.LightningModule):
     def __init__(self, lr, batch_size, num_workers, model,
@@ -26,18 +28,20 @@ class CESupSim(pl.LightningModule):
                  **kwargs):
         super(CESupSim, self).__init__()
 
-        m, self.emb_dim = model_dict[model]
-        self.model = m(with_fc=False)
-        self.head = nn.Sequential(
-            nn.Linear(self.emb_dim, self.emb_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.emb_dim, feat_dim)
-        )
+        # m, self.emb_dim = model_dict[model]
+        # self.model = m(with_fc=False)
+        # self.head = nn.Sequential(
+        #     nn.Linear(self.emb_dim, self.emb_dim),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(self.emb_dim, feat_dim)
+        # )
+        self.model = SupConResNet()
         state_dict = torch.load(path)
-        self.load_state_dict(state_dict['state_dict'])
+        if kwargs['train']:
+            self.load_state_dict(state_dict['state_dict'])
         self.feat_dim = feat_dim
 
-        self.classifier = nn.Linear(self.emb_dim, 6)
+        self.classifier = nn.Linear(2048, 6)
 
         self.criterion = nn.CrossEntropyLoss()
 
@@ -59,6 +63,7 @@ class CESupSim(pl.LightningModule):
             1 + math.cos(math.pi * self.warm_epochs / self.max_epochs)) / 2
 
         self.train_accuracy = pl.metrics.Accuracy()
+        self.test_accuracy = pl.metrics.Accuracy()
 
         self.save_hyperparameters()
 
@@ -100,7 +105,7 @@ class CESupSim(pl.LightningModule):
                                momentum=self.momentum)
 
     def forward(self, x):
-        out, _ = self.model(x)
+        out = self.model.encoder(x)
         out = self.classifier(out)
         return out
 
@@ -116,3 +121,62 @@ class CESupSim(pl.LightningModule):
         self.log('train_acc_batch', train_acc_batch, prog_bar=True)
 
         return loss
+
+    def test_dataloader(self):
+        data = SplitCifar10(root=self.data_root,
+                       train=False,
+                       transform=general_transform['test'])
+
+        data.set_split([i for i in range(10)])
+
+        loader = DataLoader(data,
+                            batch_size=self.batch_size,
+                            num_workers=self.num_workers)
+        self.len_train_loader = len(loader)
+
+        return loader
+
+    def on_test_start(self):
+        self.feature = list()
+        self.loss = list()
+        self.target = list()
+        self.logit = list()
+
+    def test_step(self, batch, batch_idx):
+        x, y = batch
+        feature = self.model.encoder(x)
+        logit = self.classifier(feature)
+        _, y_pred = logit.max(1)
+
+        # print(logit)
+        #
+        # loss = self.criterion(logit, y)
+
+        self.feature.append(feature.detach().cpu().numpy())
+        self.logit.append(logit.detach().cpu().numpy())
+        self.target.append(y.detach().cpu().numpy())
+
+        test_acc_batch = self.test_accuracy(y_pred, y)
+
+        self.log("test_acc", test_acc_batch)
+
+        return test_acc_batch
+
+    def test_epoch_end(self, outputs):
+        feature = np.concatenate(self.feature, axis=0)
+        logit = np.concatenate(self.logit, axis=0)
+        target = np.concatenate(self.target, axis=0)
+
+        state_dict = {
+            'feature': feature,
+            'logit': logit,
+            'target': target
+        }
+
+        with open(f"{self.logger.log_dir}/data.pkl", "wb") as f:
+            pkl.dump(state_dict, f)
+            print("file save has been done")
+
+        return outputs
+
+

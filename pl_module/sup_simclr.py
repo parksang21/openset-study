@@ -1,6 +1,7 @@
 from typing import Any
 import pytorch_lightning as pl
 import math
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -86,9 +87,11 @@ class SupSimModule(pl.LightningModule):
         return loader
 
     def test_dataloader(self):
-        data = CIFAR10(root=self.data_root,
-                       train=False,
-                       transform=general_transform['train'])
+        data = SplitSimCIFAR10(root=self.data_root,
+                               train=False,
+                               transform=simclr_transform['train'])
+
+        data.set_split([i for i in range(10)])
 
         loader = DataLoader(data, shuffle=False,
                             batch_size=self.batch_size,
@@ -115,6 +118,8 @@ class SupSimModule(pl.LightningModule):
 
         loss = self.criterion(feat, y)
 
+        self.log("losses", loss)
+
         return loss
 
     def test_step(self, batch, batch_idx):
@@ -126,11 +131,70 @@ class SupSimModule(pl.LightningModule):
         '''
         x, y = batch
 
-        feat = self.forward(x)
+        proj_feat = self.forward(torch.cat(x, dim=0))
 
-        loss = self.criterion(feat.unsqueeze(1), y)
-        self.log("test_loss", loss)
-        return {"test_loss": loss, }
+        f1, f2 = torch.split(proj_feat, [y.size(0), y.size(0)], dim=0)
+        proj_feat = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
+
+        known_idx = torch.stack([i == y for i in self.split_class]).sum(0).bool()
+
+        known_loss = self.criterion(proj_feat[known_idx], y[known_idx])
+        unknown_loss = self.criterion(proj_feat[~known_idx], y[~known_idx])
+
+        feat = self.model.encoder(torch.cat(x, dim=0))
+
+        # save the results of testing
+        self.target.append(y.detach().cpu().numpy())
+        self.projection.append(proj_feat.detach().cpu().numpy())
+        self.feature.append(feat.detach().cpu().numpy())
+
+        self.log("known_loss", known_loss)
+        self.log("unknown_loss", unknown_loss)
+
+        return known_loss
+
+    def on_test_start(self):
+        self.feature = list()
+        self.projection = list()
+        self.sim = list()
+        self.target = list()
+
+
+    def on_test_end(self):
+        import pickle as pkl
+
+        print(f"{'='*20}\n"
+              f"[[length]]\n"
+              f"target : {len(self.target)}\n"
+              f"projection : {len(self.projection)}\n"
+              f"feat : {len(self.feature)}\n")
+
+        target = np.concatenate(self.target, axis=0)
+        feature = np.concatenate(self.feature, axis=0)
+        projection = np.concatenate(self.projection, axis=0)
+        classes = self.split_class
+
+        save_dict = {
+            'target': target,
+            'feature': feature,
+            'projection': projection,
+            'class': classes
+        }
+
+        with open(self.logger.log_dir + "/data.pkl", "wb") as f:
+            pkl.dump(save_dict, f)
+
+
+        # known_mask = np.isin(target, self.split_class)
+        # known_idx = target[known_mask]
+        # unknown_idx = target[~known_mask]
+        #
+        # known_proj = projection[known_idx]
+        # print(known_proj.shape)
+        # # cat_proj = np.concatenate(known_proj[:,0,:], known_proj[:, 1, :], axis=0)
+
+        # assert sum(known_mask) == len(known_idx)
+
 
     def on_train_epoch_start(self):
         self.adjust_learning_rate()
